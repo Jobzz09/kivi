@@ -2,13 +2,16 @@ package conn
 
 import (
 	"fmt"
-	"io"
 	"net"
-	"os"
+	"strings"
+
+	"github.com/Jobzz09/kivi/internal/aof"
+	"github.com/Jobzz09/kivi/internal/handler"
+	"github.com/Jobzz09/kivi/internal/resp"
 )
 
 func Init() {
-	lstn, err := net.Listen("tcp", ":6889")
+	lstn, err := net.Listen("tcp", ":6388")
 	if err != nil {
 		fmt.Println(err)
 		return
@@ -20,21 +23,53 @@ func Init() {
 		return
 	}
 	defer conn.Close()
-	rcv_loop(conn)
 
+	aof, err := aof.NewAof("database.aof")
+	if err != nil {
+		fmt.Println(err)
+		return
+	}
+	defer aof.Close()
+
+	//aof.Read(resp.Value{})
+
+	rcv_loop(conn, aof)
 }
 
-func rcv_loop(conn net.Conn) {
+func rcv_loop(conn net.Conn, _aof *aof.Aof) {
 	for {
-		buf := make([]byte, 1024)
-		_, err := conn.Read(buf)
+		_resp := resp.NewResp(conn)
+		value, err := _resp.Read()
 		if err != nil {
-			if err == io.EOF {
-				break
-			}
-			fmt.Println("Error reading from client: ", err.Error())
-			os.Exit(1)
+			fmt.Println(err)
+			return
 		}
+		if value.Typ != "array" {
+			fmt.Println("Invalid request, expected array")
+			continue
+		}
+
+		if len(value.Array) == 0 {
+			fmt.Println("Invalid request, expected array length > 0")
+			continue
+		}
+
+		command := strings.ToUpper(value.Array[0].Bulk)
+		args := value.Array[1:]
+
+		writer := resp.NewWriter(conn)
+		handler, ok := handler.Handlers[command]
+		if !ok {
+			fmt.Println("Invalid command: ", command)
+			writer.Write(resp.Value{Typ: "string", Str: ""})
+			continue
+		}
+
+		if command == "SET" || command == "HSET" {
+			_aof.Write(value)
+		}
+
+		result := handler(args)
+		writer.Write(result)
 	}
-	conn.Write([]byte("Live\r\n"))
 }
